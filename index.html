@@ -371,7 +371,7 @@ nav.scrolled{border-color:var(--line);background:rgba(232,228,220,0.92);backdrop
   position: relative;
   z-index: 1;
   width: 100%;
-  max-width: 620px;
+  max-width: 420px;
   height: auto;
   object-fit: contain;
   filter: drop-shadow(0 24px 48px rgba(0,0,0,0.18));
@@ -489,7 +489,7 @@ nav.scrolled{border-color:var(--line);background:rgba(232,228,220,0.92);backdrop
 .feed-grain{position:absolute;inset:0;background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.4'/%3E%3C/svg%3E");opacity:0.35;pointer-events:none}
 .feed-overlay{position:absolute;inset:0;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,0.08) 2px,rgba(0,0,0,0.08) 4px)}
 .feed-vignette{position:absolute;inset:0;background:radial-gradient(ellipse at center,transparent 50%,rgba(0,0,0,0.7) 100%)}
-.terrain-canvas{position:absolute;inset:0}
+.terrain-canvas{position:absolute;inset:0;width:100%;height:100%;}
 .hud-top-left{position:absolute;top:24px;left:24px;font-family:var(--mono);font-size:10px;letter-spacing:0.1em;color:rgba(255,255,255,0.55);line-height:2}
 .hud-top-right{position:absolute;top:24px;right:24px;font-family:var(--mono);font-size:10px;letter-spacing:0.1em;color:rgba(255,255,255,0.55);line-height:2;text-align:right}
 .hud-bottom-bar{position:absolute;bottom:24px;left:50%;transform:translateX(-50%);width:60%;height:2px;background:rgba(255,255,255,0.1);}
@@ -845,7 +845,7 @@ nav.scrolled{border-color:var(--line);background:rgba(232,228,220,0.92);backdrop
           </div>
           <!-- Center: product image -->
           <div class="slide-body-center">
-            <img class="slide-product-img" src="BANM.png" alt="BANM product image" />
+            <img class="slide-product-img" src="https://placehold.co/600x450/D8D4CC/4A4843?text=BANM+PRODUCT+IMAGE" alt="BANM product image placeholder" />
           </div>
           <!-- Right: 3 stat callouts -->
           <div class="slide-body-right">
@@ -892,7 +892,7 @@ nav.scrolled{border-color:var(--line);background:rgba(232,228,220,0.92);backdrop
             </div>
           </div>
           <div class="slide-body-center">
-            <img class="slide-product-img" src="https://placehold.co/600x450/D8D4CC/4A4843?text=AAPS+PRODUCT+IMAGE" alt="AAPS product image" />
+            <img class="slide-product-img" src="https://placehold.co/600x450/D8D4CC/4A4843?text=AAPS+PRODUCT+IMAGE" alt="AAPS product image placeholder" />
           </div>
           <div class="slide-body-right">
             <div class="slide-stat-block">
@@ -938,7 +938,7 @@ nav.scrolled{border-color:var(--line);background:rgba(232,228,220,0.92);backdrop
             </div>
           </div>
           <div class="slide-body-center">
-            <img class="slide-product-img" src="https://placehold.co/600x450/D8D4CC/4A4843?text=BGS+PRODUCT+IMAGE" alt="BGS product image" />
+            <img class="slide-product-img" src="https://placehold.co/600x450/D8D4CC/4A4843?text=BGS+PRODUCT+IMAGE" alt="BGS product image placeholder" />
           </div>
           <div class="slide-body-right">
             <div class="slide-stat-block">
@@ -1345,58 +1345,262 @@ function animateCoords() {
 }
 setInterval(animateCoords, 1200);
 
-// ===== HUD UPDATES =====
-function animateHUD() {
-  const tl = document.getElementById('hudTL');
-  const tr = document.getElementById('hudTR');
-  if(!tl || !tr) return;
-  const alt = (87 + Math.round((Math.random()-0.5)*4));
-  const spd = (12.4 + (Math.random()-0.5)*0.6).toFixed(1);
-  const hdg = Math.round(243 + (Math.random()-0.5)*3);
-  const batt = Math.max(70, Math.round(78 - Math.random()));
-  tl.innerHTML = `MODE: AUTONOMOUS<br>ALT: ${alt}M<br>SPD: ${spd} M/S<br>HDG: ${hdg}°`;
-  tr.innerHTML = `BATT: ${batt}%<br>GPS: DENIED<br>NAV: VIO-ACTIVE<br>LINK: SECURE`;
-}
-setInterval(animateHUD, 2000);
+// ===== LIVE DRONE FOOTAGE SIMULATION =====
+// Simulates real forward flight: a large terrain buffer is generated once,
+// then panned + slightly rotated/drifted every frame to feel like POV footage.
+// HUD figures (alt/spd/hdg) are derived from the same simulated flight state,
+// not random noise, so everything reads as one consistent feed.
 
-// ===== TERRAIN CANVAS =====
+const droneFeed = {
+  canvas: null,
+  ctx: null,
+  buffer: null,      // offscreen canvas with the painted terrain (larger than viewport)
+  bufferCtx: null,
+  bufW: 0, bufH: 0,
+  viewW: 0, viewH: 0,
+  panX: 0, panY: 0,   // current top-left read position inside the buffer
+  heading: 243,       // degrees, drifts slowly
+  headingTarget: 243,
+  speed: 12.4,        // m/s, drives pan speed
+  altitude: 87,
+  battery: 78,
+  t: 0,               // running time counter for noise/oscillation
+  target: { bx: 0, by: 0, lockTimer: 0, locked: false }, // a tracked object in buffer space
+  raf: null
+};
+
+function buildTerrainBuffer(ctx, W, H, seedFn) {
+  ctx.fillStyle = '#1a1a14';
+  ctx.fillRect(0, 0, W, H);
+
+  // Base patchwork — fields/terrain blocks
+  for (let i = 0; i < 140; i++) {
+    const x = seedFn() * W, y = seedFn() * H;
+    const w = 30 + seedFn() * 160, h = 20 + seedFn() * 90;
+    const c = Math.round(28 + seedFn() * 42);
+    ctx.fillStyle = `rgb(${c},${c},${Math.round(c * 0.85)})`;
+    ctx.fillRect(x, y, w, h);
+  }
+
+  // Field-line grid (faint furrows / boundaries)
+  for (let i = 0; i < 26; i++) {
+    ctx.strokeStyle = `rgba(${60 + (i % 8) * 5},${55 + (i % 8) * 4},40,0.5)`;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(seedFn() * W, 0);
+    ctx.lineTo(seedFn() * W, H);
+    ctx.stroke();
+  }
+  for (let i = 0; i < 18; i++) {
+    ctx.strokeStyle = `rgba(${55 + (i % 6) * 4},${50 + (i % 6) * 4},38,0.4)`;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, seedFn() * H);
+    ctx.lineTo(W, seedFn() * H);
+    ctx.stroke();
+  }
+
+  // Winding roads/rivers
+  for (let i = 0; i < 10; i++) {
+    ctx.strokeStyle = 'rgba(80,75,60,0.85)';
+    ctx.lineWidth = 2 + seedFn() * 3;
+    ctx.beginPath();
+    const sx = seedFn() * W, ex = seedFn() * W;
+    const sy = 0, ey = H;
+    ctx.moveTo(sx, sy);
+    ctx.bezierCurveTo(
+      sx + (seedFn() - 0.5) * 300, H * 0.3,
+      ex + (seedFn() - 0.5) * 300, H * 0.7,
+      ex, ey
+    );
+    ctx.stroke();
+  }
+
+  // Scattered texture (trees/rocks/structures as dots)
+  for (let i = 0; i < 900; i++) {
+    const x = seedFn() * W, y = seedFn() * H, r = 1 + seedFn() * 4;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(${25 + seedFn() * 20},${35 + seedFn() * 25},${15 + seedFn() * 15},0.8)`;
+    ctx.fill();
+  }
+
+  // A handful of brighter "structures" — small rectangles, simulating buildings/vehicles
+  for (let i = 0; i < 14; i++) {
+    const x = seedFn() * W, y = seedFn() * H;
+    const w = 6 + seedFn() * 14, h = 6 + seedFn() * 10;
+    ctx.fillStyle = `rgba(${90 + seedFn() * 40},${85 + seedFn() * 35},${70 + seedFn() * 30},0.9)`;
+    ctx.fillRect(x, y, w, h);
+  }
+}
+
 function initTerrain() {
   const canvas = document.getElementById('terrainCanvas');
-  if(!canvas) return;
+  if (!canvas) return;
   const ctx = canvas.getContext('2d');
-  canvas.width = canvas.offsetWidth || window.innerWidth;
-  canvas.height = canvas.offsetHeight || window.innerHeight;
-  const W = canvas.width, H = canvas.height;
-  ctx.fillStyle = '#1a1a14';
-  ctx.fillRect(0,0,W,H);
-  const seed = () => Math.random();
-  for(let i=0;i<40;i++){
-    const x=seed()*W,y=seed()*H,w=20+seed()*120,h=10+seed()*60,c=Math.round(30+seed()*40);
-    ctx.fillStyle = `rgb(${c},${c},${Math.round(c*0.85)})`;
-    ctx.fillRect(x,y,w,h);
-  }
-  for(let i=0;i<8;i++){
-    ctx.strokeStyle = `rgba(${60+i*5},${55+i*4},40,0.6)`;
-    ctx.lineWidth = 1;ctx.beginPath();
-    ctx.moveTo(seed()*W,0);ctx.lineTo(seed()*W,H);ctx.stroke();
-  }
-  for(let i=0;i<3;i++){
-    ctx.strokeStyle='rgba(80,75,60,0.9)';ctx.lineWidth=2+seed()*3;ctx.beginPath();
-    const sx=seed()*W,ex=seed()*W;
-    ctx.moveTo(sx,0);ctx.bezierCurveTo(sx+(seed()-0.5)*200,H*0.3,ex+(seed()-0.5)*200,H*0.7,ex,H);ctx.stroke();
-  }
-  for(let i=0;i<200;i++){
-    const x=seed()*W,y=seed()*H,r=1+seed()*4;
-    ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);
-    ctx.fillStyle=`rgba(${25+seed()*20},${35+seed()*25},${15+seed()*15},0.8)`;ctx.fill();
-  }
-  ctx.strokeStyle='rgba(212,0,58,0.6)';ctx.lineWidth=1;
-  ctx.strokeRect(W*0.48,H*0.44,60,40);
-  ctx.strokeStyle='rgba(212,0,58,0.9)';ctx.lineWidth=0.8;ctx.beginPath();
-  ctx.moveTo(W*0.5+10,H*0.44);ctx.lineTo(W*0.5+10,H*0.44-8);
-  ctx.moveTo(W*0.48,H*0.5);ctx.lineTo(W*0.48-8,H*0.5);
-  ctx.stroke();
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+
+  // Measure the parent container instead of the canvas directly
+  const parent = canvas.parentElement;
+  const viewW = parent.offsetWidth || window.innerWidth;
+  const viewH = parent.offsetHeight || window.innerHeight;
+  
+  canvas.width = viewW * dpr;
+  canvas.height = viewH * dpr;
+  ctx.scale(dpr, dpr);
+
+  droneFeed.canvas = canvas;
+  droneFeed.ctx = ctx;
+  droneFeed.viewW = viewW;
+  droneFeed.viewH = viewH;
+
+  // Build an offscreen buffer significantly larger than the viewport so we
+  // have room to pan continuously without ever hitting an edge for a long time.
+  const bufW = Math.max(viewW * 4, 2400);
+  const bufH = Math.max(viewH * 4, 2400);
+  const buffer = document.createElement('canvas');
+  buffer.width = bufW;
+  buffer.height = bufH;
+  const bufferCtx = buffer.getContext('2d');
+
+  let seedState = 42;
+  const seedFn = () => {
+    // simple deterministic PRNG so re-generating on resize feels stable
+    seedState = (seedState * 9301 + 49297) % 233280;
+    return seedState / 233280;
+  };
+
+  buildTerrainBuffer(bufferCtx, bufW, bufH, seedFn);
+
+  droneFeed.buffer = buffer;
+  droneFeed.bufferCtx = bufferCtx;
+  droneFeed.bufW = bufW;
+  droneFeed.bufH = bufH;
+
+  // Start the pan roughly centered so we can drift any direction
+  droneFeed.panX = bufW / 2 - viewW / 2;
+  droneFeed.panY = bufH / 2 - viewH / 2;
+
+  // Place a target somewhere onscreen-ish within the buffer for the tracker to find
+  droneFeed.target.bx = droneFeed.panX + viewW * 0.62;
+  droneFeed.target.by = droneFeed.panY + viewH * 0.4;
+
+  if (droneFeed.raf) cancelAnimationFrame(droneFeed.raf);
+  runDroneFeedLoop();
 }
+
+function runDroneFeedLoop() {
+  const f = droneFeed;
+  f.t += 1;
+
+  // ---- Simulated flight dynamics ----
+  // Heading wanders slowly within a patrol-like arc
+  f.headingTarget += (Math.random() - 0.5) * 0.6;
+  f.headingTarget = Math.max(225, Math.min(261, f.headingTarget));
+  f.heading += (f.headingTarget - f.heading) * 0.04;
+
+  // Speed oscillates gently around a cruise value
+  f.speed = 12.4 + Math.sin(f.t * 0.01) * 0.7 + Math.sin(f.t * 0.037) * 0.3;
+
+  // Altitude breathes slightly (simulating air turbulence / terrain following)
+  f.altitude = 87 + Math.sin(f.t * 0.013) * 3.2 + Math.sin(f.t * 0.041) * 1.1;
+
+  // Battery drains very slowly over the session
+  f.battery = Math.max(61, 78 - f.t * 0.0025);
+
+  // ---- Pan the terrain buffer to simulate forward motion ----
+  // Convert heading into a direction vector; "forward" pans the read window
+  // through the buffer, which makes the ground appear to slide backward/away.
+  const rad = (f.heading - 90) * Math.PI / 180; // 0deg heading = up/forward on screen
+  const baseSpeed = f.speed * 0.16; // px/frame scaling tuned for visual feel
+  let dx = Math.cos(rad) * baseSpeed;
+  let dy = Math.sin(rad) * baseSpeed;
+
+  // subtle handheld-style jitter for realism
+  dx += (Math.random() - 0.5) * 0.25;
+  dy += (Math.random() - 0.5) * 0.25;
+
+  f.panX += dx;
+  f.panY += dy;
+
+  // Wrap pan position within buffer bounds so flight can continue indefinitely
+  const maxPanX = f.bufW - f.viewW;
+  const maxPanY = f.bufH - f.viewH;
+  if (f.panX < 0) f.panX += maxPanX;
+  if (f.panX > maxPanX) f.panX -= maxPanX;
+  if (f.panY < 0) f.panY += maxPanY;
+  if (f.panY > maxPanY) f.panY -= maxPanY;
+
+  // ---- Draw the current viewport slice from the buffer ----
+  const ctx = f.ctx;
+  ctx.save();
+  // tiny rotational sway to sell handheld/gimbal motion
+  const sway = Math.sin(f.t * 0.018) * 0.6; // degrees
+  ctx.translate(f.viewW / 2, f.viewH / 2);
+  ctx.rotate(sway * Math.PI / 180);
+  ctx.translate(-f.viewW / 2, -f.viewH / 2);
+
+  ctx.drawImage(
+    f.buffer,
+    f.panX, f.panY, f.viewW, f.viewH,
+    -10, -10, f.viewW + 20, f.viewH + 20 // slight oversize to hide rotation edges
+  );
+  ctx.restore();
+
+  // ---- Draw a tracked target blip if it's within the current view ----
+  const tScreenX = f.target.bx - f.panX;
+  const tScreenY = f.target.by - f.panY;
+  const visible = tScreenX > 20 && tScreenX < f.viewW - 20 && tScreenY > 20 && tScreenY < f.viewH - 20;
+
+  if (visible) {
+    f.target.lockTimer++;
+    const pulse = 0.5 + Math.sin(f.t * 0.12) * 0.5;
+    ctx.strokeStyle = `rgba(212,0,58,${0.55 + pulse * 0.35})`;
+    ctx.lineWidth = 1.2;
+    ctx.strokeRect(tScreenX - 22, tScreenY - 16, 44, 32);
+    ctx.beginPath();
+    ctx.moveTo(tScreenX, tScreenY - 16); ctx.lineTo(tScreenX, tScreenY - 24);
+    ctx.moveTo(tScreenX, tScreenY + 16); ctx.lineTo(tScreenX, tScreenY + 24);
+    ctx.moveTo(tScreenX - 22, tScreenY); ctx.lineTo(tScreenX - 30, tScreenY);
+    ctx.moveTo(tScreenX + 22, tScreenY); ctx.lineTo(tScreenX + 30, tScreenY);
+    ctx.stroke();
+    f.target.locked = f.target.lockTimer > 40;
+    if (f.target.locked) {
+      ctx.fillStyle = 'rgba(212,0,58,0.9)';
+      ctx.font = '9px monospace';
+      ctx.fillText('TGT LOCK', tScreenX - 20, tScreenY - 30);
+    }
+  } else {
+    f.target.lockTimer = 0;
+    f.target.locked = false;
+  }
+
+  // Occasionally relocate target once it's drifted far out of frame, so a
+  // new "contact" appears periodically rather than vanishing forever.
+  if (!visible && Math.random() < 0.004) {
+    f.target.bx = f.panX + f.viewW * (0.25 + Math.random() * 0.5);
+    f.target.by = f.panY + f.viewH * (0.25 + Math.random() * 0.5);
+  }
+
+  // ---- Sync HUD readouts to the simulated flight state ----
+  const tl = document.getElementById('hudTL');
+  const tr = document.getElementById('hudTR');
+  if (tl && tr) {
+    tl.innerHTML = `MODE: AUTONOMOUS<br>ALT: ${Math.round(f.altitude)}M<br>SPD: ${f.speed.toFixed(1)} M/S<br>HDG: ${Math.round(f.heading)}°`;
+    tr.innerHTML = `BATT: ${Math.round(f.battery)}%<br>GPS: DENIED<br>NAV: VIO-ACTIVE<br>LINK: ${f.target.locked ? 'TGT LOCKED' : 'SECURE'}`;
+  }
+
+  f.raf = requestAnimationFrame(runDroneFeedLoop);
+}
+
+// Rebuild on resize so the feed always fills the section cleanly
+let droneFeedResizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(droneFeedResizeTimer);
+  droneFeedResizeTimer = setTimeout(() => {
+    if (document.getElementById('terrainCanvas')) initTerrain();
+  }, 250);
+});
 
 // ===== CONTACT DRAWER =====
 function openDrawer() {
